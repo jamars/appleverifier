@@ -1,0 +1,18 @@
+{application, appleverifier,
+ [{description, "Validates Apple InApp Receipts"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, {appleverifier_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    jsx,
+    lhttpc,
+    erlcloud
+   ]},
+  {env,[]},
+  {modules, [appleverifier_server]},
+
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
