@@ -16,39 +16,8 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 init([]) ->
-    % Build server state from environment config
-    AwsConfEnv = application:get_env(erlcloud, aws_config),
-    {ok, Aws_Config_List} = AwsConfEnv,
-    AwsConfState = #aws_config_state{
-        aws_access_key_id = proplists:get_value(aws_access_key_id, Aws_Config_List),
-        aws_secret_access_key = proplists:get_value(aws_secret_access_key, Aws_Config_List) },
-    
-    {ok, AwsParams}   = application:get_env(appleverifier, aws_params),
-    AwsParamsState = #aws_params_state{
-        in_queue  = proplists:get_value(in_queue, AwsParams),
-        ddb_table = proplists:get_value(ddb_table, AwsParams)
-        },
-
-    {ok, AwsResourcesEnv} = application:get_env(appleverifier, aws_resources),
-    io:format("~n~p AWS_RESOURCES: ~p~n", [?FUNCTION_NAME, AwsResourcesEnv]),
-    AwsResourcesSqsUrlEnv = proplists:get_value(sqs_url, AwsResourcesEnv),
-    AwsResourcesDdbUrlEnv = proplists:get_value(ddb_url, AwsResourcesEnv),
-    AwsResourcesState = #aws_resources_state{
-        sqs_url = AwsResourcesSqsUrlEnv,
-        ddb_url = AwsResourcesDdbUrlEnv
-        },
-    
-    {ok, AppleParams} = application:get_env(appleverifier, apple_params),
-    AppleParamsState = #apple_params_state{apple_api_url_state = proplists:get_value(apple_api_url, AppleParams)},
-
-    State = #state{
-        aws_config_state = AwsConfState,
-        aws_params_state = AwsParamsState,
-        aws_resources_state = AwsResourcesState,
-        apple_params_state = AppleParamsState},
-
-    erlang:send_after(1000, self(), polling_loop),
-    {ok, State}.
+    erlang:send_after(2000, self(), polling_loop),
+    {ok, create_state_from_app_config()}.
 
 handle_call({test, S}, _From, State) ->
     {reply, S, State};
@@ -61,50 +30,37 @@ handle_cast(_Msg, State) ->
 
 handle_info(polling_loop, State) ->
     io:format("~n~p POLLING~n", [?FUNCTION_NAME]),
-    %% TODO: sqs polling returning up to 10 messages and delete batch them after processing...
-    %% TODO: add Visibility timeout to State (read from app config)
-    %% TODO: add Polling timeout to State (read from app config)
-    %% Receive message
-    SQSConfig = create_aws_config_for_sqs(
-            State#state.aws_config_state,
-            ((State#state.aws_resources_state)#aws_resources_state.sqs_url)),
-    R = erlcloud_sqs:receive_message(
-        ((State#state.aws_params_state)#aws_params_state.in_queue),
-        all,
-        1,  %% Retrieve one message
-        30, %% Set AWS SQS Visibility Timeout for read message
-        15, %% AWS SQS Polling Timeout
-        all,
-        SQSConfig),
+    % Extract required info from State
+    { InQueueName,
+      DDBTableName,
+      AppleApiUrl,
+      SQSConfig,
+      DDBConfig } = extract_from_state(State),
 
-    %% Get the proplist of the 1st message inside messages tuple from the enclosing array
-    M = getSingleMessageFromAwsResponse(R),
     %% Extract message body with business data
-    MessageBody = getBodyFromMessage(M),
-    SQSReceipt = proplists:get_value(receipt_handle, M),
+    {MessageBody, SQSReceipt} =
+          get_body_and_receipt_from_message(
+            poll_sqs(InQueueName, SQSConfig)),
 
     %% Process message
+    case verify_with_apple(MessageBody, AppleApiUrl) of
+        {ok, UserId, OutQueueName, TransactionId} ->
+            BusinessResult = verify_business_transaction(DDBTableName, TransactionId, DDBConfig),
+            inform_outcome(BusinessResult, UserId, TransactionId, OutQueueName, SQSConfig),
+            remove_message_from_inbound_queue(SQSReceipt, SQSConfig);
 
-    %% Create aws config for dynamoDB access
-    DDBConfig = create_aws_config_for_ddb(
-        State#state.aws_config_state,
-        ((State#state.aws_resources_state)#aws_resources_state.ddb_url)
-    ),
-    case verify_with_apple(MessageBody,((State#state.apple_params_state)#apple_params_state.apple_api_url_state)) of
-        {ok, UserId, OutQ, TransactionId} -> 
-            BusinessResult = verify_business_transaction((State#state.aws_params_state)#aws_params_state.ddb_table, TransactionId, DDBConfig),
-            inform_outcome(BusinessResult, UserId, TransactionId, OutQ, SQSConfig),
+        {invalid, UserId, OutQueueName, TransactionId} ->
+            inform_outcome(invalid, UserId, TransactionId, OutQueueName, SQSConfig),
             remove_message_from_inbound_queue(SQSReceipt, SQSConfig);
-        {invalid, UserId, OutQ, TransactionId} ->
-            inform_outcome(invalid, UserId, TransactionId, OutQ, SQSConfig),
-            remove_message_from_inbound_queue(SQSReceipt, SQSConfig);
+
         %% Receiving empty means there was no message to process
         %% and there's nothing to do
         empty ->
             [];
+
+        %% Probably an HTTP transient error
+        %% will retry later
         Unexpected ->
-            %% Probably an HTTP transient error
-            %% will retry later
             io:format("~n~p Unexpected error: ~p~n", [?FUNCTION_NAME, Unexpected])
     end,
     %% Reschedule polling for new messages
@@ -122,17 +78,105 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% Private module functions
 
-getSingleMessageFromAwsResponse([{messages, []}|_]) ->
+create_state_from_app_config() ->
+    % Build server state from environment config
+    AwsConfEnv = application:get_env(erlcloud, aws_config),
+    {ok, Aws_Config_List} = AwsConfEnv,
+    AwsConfState = #aws_config_state{
+        aws_access_key_id = proplists:get_value(aws_access_key_id, Aws_Config_List),
+        aws_secret_access_key = proplists:get_value(aws_secret_access_key, Aws_Config_List) },
+
+    {ok, AwsParams} = application:get_env(appleverifier, aws_params),
+    AwsParamsState = #aws_params_state{
+        in_queue = proplists:get_value(in_queue, AwsParams),
+        ddb_table = proplists:get_value(ddb_table, AwsParams)
+        },
+
+    {ok, AwsResourcesEnv} = application:get_env(appleverifier, aws_resources),
+    AwsResourcesSqsUrlEnv = proplists:get_value(sqs_url, AwsResourcesEnv),
+    AwsResourcesDdbUrlEnv = proplists:get_value(ddb_url, AwsResourcesEnv),
+    AwsResourcesState = #aws_resources_state{
+        sqs_url = AwsResourcesSqsUrlEnv,
+        ddb_url = AwsResourcesDdbUrlEnv
+        },
+
+    {ok, AppleParams} = application:get_env(appleverifier, apple_params),
+    AppleParamsState = #apple_params_state{apple_api_url_state = proplists:get_value(apple_api_url, AppleParams)},
+
+    #state{
+        aws_config_state = AwsConfState,
+        aws_params_state = AwsParamsState,
+        aws_resources_state = AwsResourcesState,
+        apple_params_state = AppleParamsState}.
+
+extract_from_state(State) when is_record(State, state) ->
+    #state{
+        aws_config_state = AWSConfig,
+        aws_resources_state =
+            #aws_resources_state{
+                sqs_url = SQSUrl,
+                ddb_url = DDBUrl
+            },
+        aws_params_state =
+            #aws_params_state{
+                in_queue = InQueueName,
+                ddb_table = DDBTableName
+            },
+        apple_params_state =
+            #apple_params_state{
+                apple_api_url_state = AppleApiUrl
+            }
+    } = State,
+    %% Create aws config for SQS access
+    SQSConfig = create_aws_config_for_sqs(AWSConfig, SQSUrl),
+    %% Create aws config for DynamoDB access
+    DDBConfig = create_aws_config_for_ddb(AWSConfig, DDBUrl),
+
+    {
+     InQueueName,
+     DDBTableName,
+     AppleApiUrl,
+     SQSConfig,
+     DDBConfig
+    }.
+
+%% Poll AWS SQS Queue
+%% TODO: SQS polling returning up to 10 messages and delete batch them after processing...
+%% TODO: add Visibility timeout to State (read from app config)
+%% TODO: add Polling timeout to State (read from app config)
+poll_sqs(QueueName, AwsConfig) ->
+    get_single_message_from_sqs_response(
+        erlcloud_sqs:receive_message(
+            QueueName,
+            all,
+            1,  %% Retrieve one message
+            30, %% Set AWS SQS Visibility Timeout for read message
+            15, %% AWS SQS Polling Timeout
+            all,
+            AwsConfig)).
+
+get_single_message_from_sqs_response([{messages, []}|_]) ->
     [];
 
-getSingleMessageFromAwsResponse([{messages, [R|_]}|_]) ->
+%% SQS messages returned by ercloud_sqs:receive_message with format
+%% [{messages, [...]}, ...]
+%% This function returns the first element of the list
+%% in the tuple {messages, [...]}
+get_single_message_from_sqs_response([{messages, [R|_]}|_]) ->
     io:format("~ngetSingleMessageFromAwsResponse: ~p~n", [R]),
     R.
 
-getBodyFromMessage([]) ->
+get_body_and_receipt_from_message([]) ->
+    {[], undefined};
+
+get_body_and_receipt_from_message(M) when is_list(M) ->
+    Body = get_body_from_message(M),
+    {Body, proplists:get_value(receipt_handle, M)}.
+
+get_body_from_message([]) ->
     [];
 
-getBodyFromMessage(M) when is_list(M) ->
+get_body_from_message(M) when is_list(M) ->
     Raw = proplists:get_value(body, M),
     case Decoded = Raw =:= [] orelse jsx:decode(list_to_binary(Raw)) of
         true -> [];
@@ -191,7 +235,7 @@ verify_business_transaction(DDBtable, TransactionId, DdbConfig) ->
             io:format("~n~p TransactionId ~p was written to database~n", [?FUNCTION_NAME, TransactionId]),
             ok;
         {error,{<<"ConditionalCheckFailedException">>,<<>>}} ->
-            io:format("~n~p TransactionId ~p was already processed, will not send out message~n", [?FUNCTION_NAME, TransactionId]),
+            io:format("~n~p TransactionId ~p was already processed, will send invalid message~n", [?FUNCTION_NAME, TransactionId]),
             invalid;
         Unexpected ->
             io:format("~n~p TransactionId ~p unexpected error (~p) accessing database~n", [?FUNCTION_NAME, TransactionId, Unexpected]),
