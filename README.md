@@ -47,3 +47,10 @@ Create a tar archive (Production)
 
     $ rebar3 as prod tar
 
+Note on logging
+----------------
+
+The application uses the default erlang logger.
+You may change the sys.config file to change the logger's configuration.
+The default log level is "notice".
+To change the logging while running the application in the shell (e.g. running `rebar3 shell`), you may issue `logger:set_primary_config(level, debug).` to change the log level to `debug`.

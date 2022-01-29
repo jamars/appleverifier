@@ -6,10 +6,10 @@ verify_receipt(B64Receipt, API_URL) ->
     JSON = get_verify_receipt_request_as_json(B64Receipt),
     case make_request(JSON, API_URL) of
         {ok, R} ->
-            io:format("~n~p Body: ~p~n", [?FUNCTION_NAME, R]),
+            logger:debug("~n~p Body: ~p~n", [?FUNCTION_NAME, R]),
             verify_successful_call(R);
         {error, Error} ->
-            io:format("~n~p Error: ~pn", [?FUNCTION_NAME, Error]),
+            logger:error("~n~p Error: ~pn", [?FUNCTION_NAME, Error]),
             {error, Error}
     end.
 

@@ -29,7 +29,7 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(polling_loop, State) ->
-    io:format("~n~p POLLING~n", [?FUNCTION_NAME]),
+    logger:info("~n~p POLLING~n", [?FUNCTION_NAME]),
     % Extract required info from State
     { InQueueName,
       DDBTableName,
@@ -61,13 +61,13 @@ handle_info(polling_loop, State) ->
         %% Probably an HTTP transient error
         %% will retry later
         Unexpected ->
-            io:format("~n~p Unexpected error: ~p~n", [?FUNCTION_NAME, Unexpected])
+            logger:error("~n~p Unexpected error: ~p~n", [?FUNCTION_NAME, Unexpected])
     end,
     %% Reschedule polling for new messages
     reschedule_poll(State);
 
 handle_info(Info, State) ->
-    io:format("handle_info: ~p~n", [Info]),
+    logger:notice("handle_info: ~p~n", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -158,12 +158,12 @@ poll_sqs(QueueName, AwsConfig) ->
 get_single_message_from_sqs_response([{messages, []}|_]) ->
     [];
 
-%% SQS messages returned by ercloud_sqs:receive_message with format
+%% SQS messages are returned by ercloud_sqs:receive_message with format
 %% [{messages, [...]}, ...]
 %% This function returns the first element of the list
 %% in the tuple {messages, [...]}
 get_single_message_from_sqs_response([{messages, [R|_]}|_]) ->
-    io:format("~ngetSingleMessageFromAwsResponse: ~p~n", [R]),
+    logger:info("~ngetSingleMessageFromAwsResponse: ~p~n", [R]),
     R.
 
 get_body_and_receipt_from_message([]) ->
@@ -203,8 +203,8 @@ verify_with_apple(M, AppleApiUrl) ->
     UserId = proplists:get_value(<<"user_id">>, M),
     OutQ = proplists:get_value(<<"post_queue">>, M),
 
-    io:format("~n~p UserId: ~p~n", [?FUNCTION_NAME, UserId]),
-    io:format("~n~p OutQ: ~p~n", [?FUNCTION_NAME, OutQ]),
+    logger:debug("~n~p UserId: ~p~n", [?FUNCTION_NAME, UserId]),
+    logger:debug("~n~p OutQ: ~p~n", [?FUNCTION_NAME, OutQ]),
 
     case appleverifier_apple_requests:verify_receipt(Receipt, AppleApiUrl) of
         {ok, TransactionId} ->
@@ -212,7 +212,7 @@ verify_with_apple(M, AppleApiUrl) ->
         {invalid, TransactionId} ->
             {invalid, UserId, OutQ, TransactionId};
         {error, _} ->
-            io:format("~n~p Error", [?FUNCTION_NAME]),
+            logger:error("~n~p Error", [?FUNCTION_NAME]),
             {error, UserId, OutQ}
     end.
 
@@ -229,16 +229,16 @@ create_condition_expression() ->
     {condition_expression, <<"attribute_not_exists(transaction_id)">>}.
 
 verify_business_transaction(DDBtable, TransactionId, DdbConfig) ->
-    io:format("~n~p Table: ~p TransactionId: ~p~n", [?FUNCTION_NAME, DDBtable, TransactionId]),
+    logger:info("~n~p Table: ~p TransactionId: ~p~n", [?FUNCTION_NAME, DDBtable, TransactionId]),
     case erlcloud_ddb2:put_item(DDBtable, [create_put_expression(TransactionId)], [create_condition_expression()], DdbConfig) of
         {ok,[]} ->
-            io:format("~n~p TransactionId ~p was written to database~n", [?FUNCTION_NAME, TransactionId]),
+            logger:info("~n~p TransactionId ~p was written to database~n", [?FUNCTION_NAME, TransactionId]),
             ok;
         {error,{<<"ConditionalCheckFailedException">>,<<>>}} ->
-            io:format("~n~p TransactionId ~p was already processed, will send invalid message~n", [?FUNCTION_NAME, TransactionId]),
+            logger:warning("~n~p TransactionId ~p was already processed, will send invalid message~n", [?FUNCTION_NAME, TransactionId]),
             invalid;
         Unexpected ->
-            io:format("~n~p TransactionId ~p unexpected error (~p) accessing database~n", [?FUNCTION_NAME, TransactionId, Unexpected]),
+            logger:error("~n~p TransactionId ~p unexpected error (~p) accessing database~n", [?FUNCTION_NAME, TransactionId, Unexpected]),
             no_send %% ?? API failure - shouldn't remove from in queue?
     end.
 
