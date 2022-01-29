@@ -30,6 +30,8 @@ Messages will be written to the "post_queue" according to the following JSON:
 Build
 -----
 
+This project uses `rebar3` as its building tool. Follow [these](https://rebar3.readme.io/docs/getting-started) instructions to install it.
+
     $ rebar3 compile
 
 Run in shell (Development)
