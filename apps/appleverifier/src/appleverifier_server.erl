@@ -2,7 +2,7 @@
 
 -behaviour(gen_server).
 
--export([start_link/0, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+-export([start_link/1, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
 
@@ -12,8 +12,9 @@
 -record(apple_params_state, {apple_api_url_state = "https://sandbox.itunes.apple.com"}).
 -record(state, { aws_config_state, aws_params_state, aws_resources_state, apple_params_state }).
 
-start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+start_link(Name) ->
+    logger:info("Starting ~p", [Name]),
+    gen_server:start_link({local, Name}, ?MODULE, [], []).
 
 init([]) ->
     erlang:send_after(2000, self(), polling_loop),
@@ -29,7 +30,7 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(polling_loop, State) ->
-    logger:info("~n~p POLLING~n", [?FUNCTION_NAME]),
+    logger:info("~p POLLING", [?FUNCTION_NAME]),
     % Extract required info from State
     { InQueueName,
       DDBTableName,
