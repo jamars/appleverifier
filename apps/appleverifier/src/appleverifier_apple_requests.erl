@@ -2,6 +2,19 @@
 
 -export([verify_receipt/2]).
 
+verify_receipt(B64Receipt, API_URL) ->
+    JSON = get_verify_receipt_request_as_json(B64Receipt),
+    case make_request(JSON, API_URL) of
+        {ok, R} ->
+            io:format("~n~p Body: ~p~n", [?FUNCTION_NAME, R]),
+            verify_successful_call(R);
+        {error, Error} ->
+            io:format("~n~p Error: ~pn", [?FUNCTION_NAME, Error]),
+            {error, Error}
+    end.
+
+%% Private module functions
+
 get_verify_receipt_request_as_json([]) ->
     jsx:encode([{<<"receipt-data">>,<<"">>}]);
 
@@ -16,17 +29,6 @@ make_request(JSON, API_URL) ->
         {ok, {_, _, Body}} ->
             {ok, jsx:decode(Body)};
         {error, Error} ->
-            {error, Error}
-    end.
-
-verify_receipt(B64Receipt, API_URL) ->
-    JSON = get_verify_receipt_request_as_json(B64Receipt),
-    case make_request(JSON, API_URL) of
-        {ok, R} ->
-            io:format("~n~p Body: ~p~n", [?FUNCTION_NAME, R]),
-            verify_successful_call(R);
-        {error, Error} ->
-            io:format("~n~p Error: ~pn", [?FUNCTION_NAME, Error]),
             {error, Error}
     end.
 
